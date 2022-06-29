@@ -1,0 +1,5 @@
+barb==0.2.5
+colorama==0.4.5
+jetts-tools==0.0.8
+python-dotenv==0.20.0
+toml==0.10.2
