@@ -1,11 +1,12 @@
 from setuptools import setup, find_packages
+from staircase.version import VERSION
 
 with open('README.md') as f:
     readme = f.read()
 
 setup(
     name='staircase-test',
-    version='0.0.1',
+    version=VERSION,
     author='Jett Crowson & Dylan Cormican',
     author_email='jettcrowson@gmail.com',
     url='https://github.com/jettdc/staircase',
