@@ -17,5 +17,5 @@ setup(
     packages=find_packages(),
     keywords='testing framework test-framework step-testing',
     python_requires='>=3.10',
-    install_requires=['colorama', 'jetts-tools', 'barb', 'python-dotenv']
+    install_requires=['colorama', 'jetts-tools', 'barb', 'python-dotenv', 'typing-extensions']
 )
