@@ -4,7 +4,7 @@ with open('README.md') as f:
     readme = f.read()
 
 setup(
-    name='staircase',
+    name='staircase-test',
     version='0.0.1',
     author='Jett Crowson & Dylan Cormican',
     author_email='jettcrowson@gmail.com',
