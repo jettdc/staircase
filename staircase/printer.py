@@ -1,6 +1,5 @@
 from staircase.logger import StaircaseLogger
-from staircase.decorators import _Substep
-from jettools import str_tools
+from utils.strings import pad_to
 from colorama import Fore
 from enum import Enum
 
@@ -41,7 +40,7 @@ class StaircasePrinter:
 
     def _print_table_cap(self):
         self.logger.info(
-            f"\n{str_tools.pad_to('STEP #', StaircasePrinter.RES_NUM_PADDING)}{str_tools.pad_to('TYPE', StaircasePrinter.STEP_TYPE_PADDING)}{'STATUS'}   {str_tools.pad_to('NAME', StaircasePrinter.DESC_PADDING)}{'DESCRIPTION'}")
+            f"\n{pad_to('STEP #', StaircasePrinter.RES_NUM_PADDING)}{pad_to('TYPE', StaircasePrinter.STEP_TYPE_PADDING)}{'STATUS'}   {pad_to('NAME', StaircasePrinter.DESC_PADDING)}{'DESCRIPTION'}")
         self.logger.info("-"*StaircasePrinter.HEADER_WIDTH)
 
     def _print_header(self, content):
@@ -71,15 +70,15 @@ class StaircasePrinter:
         pf = f"SKIP" if display_mode or passed is None else f'{Fore.GREEN}PASS{Fore.RESET}' if passed else f'{Fore.RED}FAIL{Fore.RESET}'
 
         self.logger.info(
-            f"{str_tools.pad_to(str(step_no), StaircasePrinter.RES_NUM_PADDING)}{str_tools.pad_to(stype, StaircasePrinter.STEP_TYPE_PADDING)}{pf}     {str_tools.pad_to(step, StaircasePrinter.DESC_PADDING)}{desc}")
+            f"{pad_to(str(step_no), StaircasePrinter.RES_NUM_PADDING)}{pad_to(stype, StaircasePrinter.STEP_TYPE_PADDING)}{pf}     {pad_to(step, StaircasePrinter.DESC_PADDING)}{desc}")
 
-        if passed == False:
-            self.logger.info(" " * (StaircasePrinter.RES_NUM_PADDING + StaircasePrinter.STEP_TYPE_PADDING - 1), f"{Fore.RED}└x {str(step_return)}{Fore.RESET}")
+        if not passed and step_return is not None:
+            self.logger.info(" " * (StaircasePrinter.RES_NUM_PADDING + StaircasePrinter.STEP_TYPE_PADDING - 1), f"{Fore.RED if passed is not None else ''}└{'x' if passed is not None else ''} {str(step_return)}{Fore.RESET if passed is not None else ''}")
 
-        if substeps and _Substep.parent_has_substeps(step):
+        if substeps and len(self.step_directory[step]['substeps']) > 0:
             self._print_substeps(step_no, step)
 
     def _print_substeps(self, step_no, step_name):
-        for i, substep in enumerate(_Substep.get_substeps_for_parent(step_name)):
+        for i, substep in enumerate(self.step_directory[step_name]['substeps']):
             full_step_no = f" └{step_no}.{i + 1}"
             self._print_result_line(full_step_no, substep["name"], {substep["name"]: substep}, substeps=False, only_tests=True)

@@ -1,7 +1,7 @@
-from staircase.decorators import _Task, _Setup, _Test, _Teardown, _Substep
+from staircase.decorators import _Task, _Setup, _Test, _Teardown
 from staircase.logger import StaircaseLogger, DefaultLogger
 from staircase import StaircasePrinter, StaircasePrintMode
-from jettools.class_tools import get_public_members
+from utils.classes import get_members
 from typing_extensions import final
 
 """
@@ -52,15 +52,34 @@ The steps are run in an arbitrary order unless the on_pass or on_fail parameters
 """
 
 
+class ResetSignal(Exception):
+    pass
+
+class MaxResetsExceeded(Exception):
+    pass
+
+
 class StaircaseTest:
     RESULT_FORMAT = {
         "step_no_padding": 6
     }
 
-    def __init__(self, logger: StaircaseLogger = None):
-        self.logger = logger if logger is not None else DefaultLogger.get_default()
+    def __init__(self, logger: StaircaseLogger = None, restart_retries=1):
+        if self.__class__.__name__ == "StaircaseTest":
+            raise Exception("StaircaseTest cannot be instantiated on its own, it must be subclassed by the test class.")
+
+        if logger is None:
+            self.logger = DefaultLogger.get_default()
+        elif isinstance(logger, StaircaseLogger):
+            self.logger = logger
+        else:
+            raise Exception("Invalid logger. Must be a subclass of StaircaseLogger.")
+
+        self.max_restart_retries = restart_retries
+        self.retries = 0
 
         self.ordered_list = []
+        self.run_args = {}
 
         self.step_directory = {}
         self._register_steps()
@@ -70,32 +89,42 @@ class StaircaseTest:
 
         self._assign_indices_to_directory()
 
+    def __repr__(self):
+        return 'StaircaseTest'
+
     @final
-    def run(self, first_step=0, last_step=None, show_all=True):
+    def run(self, first_step=1, last_step=None, show_all=True):
         if last_step is None:
             last_step = len(self.ordered_list)
+
+        self.run_args = {
+            'first_step': first_step,
+            'last_step': last_step,
+            'show_all': show_all,
+        }
 
         self._check_first_last(first_step, last_step)
 
         self._reset()
 
-        self._run_flight(first_step, last_step, self._setup_steps)
-        self._run_flight(first_step, last_step, self._main_steps)
-        self._run_flight(first_step, last_step, self._teardown_steps)
+        try:
+            self._run_flight(first_step, last_step, self._setup_steps)
+            self._run_flight(first_step, last_step, self._main_steps)
+            self._run_flight(first_step, last_step, self._teardown_steps)
 
-        self._log_test_results(show_all)
+            self._log_test_results(show_all)
+        except ResetSignal:
+            self.run(**self.run_args)
 
     def display(self):
         printer = StaircasePrinter(self.ordered_list, self.step_directory, self.logger)
         printer.print(StaircasePrintMode.DISPLAY)
 
     def _reset(self):
-        # Clear substep results
-        _Substep.call_history = {}
-
-        # Clear step results
+        # Clear step and substep results
         for step in self.step_directory:
             self.step_directory[step]['results'] = (None, None)
+            self.step_directory[step]['substeps'] = []
 
     def _run_flight(self, first_step, last_step, steps):
         for step in steps:
@@ -115,7 +144,9 @@ class StaircaseTest:
             if self._check_pre_requisites(step_name):
                 getattr(self, step_name)(self)
             else:
-                self.step_directory[step_name]['results'] = (False, "Did not run due to step dependency check failure.")
+                self.step_directory[step_name]['results'] = (None, "Did not run due to step dependency check failure.")
+        except MaxResetsExceeded as max_resets_exception:
+            self.step_directory[step_name]['results'] = (False, str(max_resets_exception))
         except Exception as e:
             self.logger.error(f'An exception occurred while executing step {step_name}. {str(e)}')
             raise e
@@ -127,6 +158,7 @@ class StaircaseTest:
     def _check_pre_requisites(self, step):
         on_pass = self.step_directory[step]['on_pass']
         on_fail = self.step_directory[step]['on_fail']
+
         if on_pass:
             dependencies_have_passed = []
             for dep in on_pass:
@@ -142,7 +174,7 @@ class StaircaseTest:
         return True
 
     def _register_steps(self):
-        for step_name in get_public_members(self):
+        for step_name in get_members(self):
             for step in self._get_flights():
                 if isinstance(getattr(self, step_name), step):
                     self.register_step(step.__name__, -1,
@@ -152,6 +184,29 @@ class StaircaseTest:
                                        self._get_on_fail_for_step(step_name),
                                        getattr(self, step_name).desc)
                     break
+
+        for registered_step in self.step_directory:
+            on_pass = self.step_directory[registered_step]['on_pass']
+            on_fail = self.step_directory[registered_step]['on_fail']
+
+            if on_pass == ('$ALL',):
+                all_steps = tuple([])
+                for step in self.step_directory:
+                    if step != registered_step:
+                        all_steps += (step,)
+                on_pass = all_steps
+
+            if on_fail == ('$ALL',):
+                all_steps = tuple([])
+                for step in self.step_directory:
+                    if step != registered_step:
+                        all_steps += (step,)
+                on_fail = all_steps
+
+            self.step_directory[registered_step]['on_pass'] = on_pass
+            self.step_directory[registered_step]['on_fail'] = on_fail
+
+        print(self.step_directory['close_db_conn'])
 
     def _get_flights(self):
         return [
@@ -187,7 +242,8 @@ class StaircaseTest:
             'on_pass': on_pass,
             'on_fail': on_fail,
             'desc': desc,
-            'ref': ref
+            'ref': ref,
+            'substeps': []
         }
 
     def get_return_from_step(self, step):
@@ -221,7 +277,7 @@ class StaircaseTest:
                 ordered_list = self._recur_step_dependencies(step_name, ordered_list)
         except Exception as e:
             if 'recursion depth' in str(e):
-                raise Exception("Dependency loop found between steps' on_fail and/or on_pass.")
+                raise Exception(f"Dependency loop found between steps on_fail and/or on_pass for step {step_name}.")
             raise Exception(f'An error occurred while ordering steps. {str(e)}')
 
         setup_steps = []
@@ -239,7 +295,8 @@ class StaircaseTest:
                 case '_Teardown':
                     teardown_steps.append(step_name)
                 case _:
-                    raise Exception(f'An error occurred while ordering steps. Step type {self.step_directory[step_name]["type"]} is invalid.')
+                    raise Exception(
+                        f'An error occurred while ordering steps. Step type {self.step_directory[step_name]["type"]} is invalid.')
 
         return setup_steps, task_steps, teardown_steps
 
@@ -262,10 +319,17 @@ class StaircaseTest:
         for index, step in enumerate(concat_steps, 1):
             self.step_directory[step] |= {'index': index}
 
-    @staticmethod
-    def _check_first_last(first_step, last_step):
-        if first_step > last_step:
+    def _check_first_last(self, first_step, last_step):
+        if first_step > last_step or first_step < 1 or last_step > len(self.ordered_list):
             raise Exception(f'The first step function comes after the last step function listed.')
         else:
             return True
 
+    def restart(self):
+        if self.retries > self.max_restart_retries:
+            raise MaxResetsExceeded('Can not restart test: Max retries exceeded.')
+
+        self.logger.info('Attempting to restart the test...')
+        self.retries += 1
+
+        raise ResetSignal('Attempting to restart...')
