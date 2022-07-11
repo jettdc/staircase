@@ -95,6 +95,7 @@ class MyTest(StaircaseTest):
 ### Running Tests
 Tests can be run by instantiating the class and calling the `run` method.
 
+
 ```python
 test = MyTest()
 test.run()
