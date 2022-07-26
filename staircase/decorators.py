@@ -1,3 +1,4 @@
+from staircase.types import SubstepRegistration
 import inspect
 
 
@@ -60,7 +61,7 @@ class _StepDecorator:
             raise Exception('Invalid return from step function. Must be a tuple of type (bool, any)')
 
         # Store the result for later analysis as well as returning it
-        args[0].step_directory[self.function.__name__]['results'] = results
+        args[0].step_registry[self.function.__name__].results = results
         return results
 
     @classmethod
@@ -126,18 +127,14 @@ class _Substep:
         if results is None:
             raise Exception('Invalid return from substep function. Must be a tuple of type (bool, any)')
 
-        self.test_instance.step_directory[self.parent_function]['substeps'].append({
-            "results": results,
-            "desc": self.desc,
-            "name": self.function.__name__,
-            "type": "_Substep"
-        })
+        substep = SubstepRegistration(desc=self.desc, substep_name=self.substep_name)
+        self.test_instance.step_registry[self.parent_function].substeps.append(substep)
 
         return results
 
     def _dependencies_are_ok(self):
-        parent_on_pass = self.test_instance.step_directory[self.parent_function]['on_pass']
-        parent_on_fail = self.test_instance.step_directory[self.parent_function]['on_fail']
+        parent_on_pass = self.test_instance.step_registry[self.parent_function].on_pass
+        parent_on_fail = self.test_instance.step_registry[self.parent_function].on_fail
 
         on_pass_ok = True
         if self.on_pass is None and parent_on_pass is not None or self.on_pass is not None and parent_on_pass is None:
@@ -156,7 +153,6 @@ class _Substep:
         return on_pass_ok and on_fail_ok
 
     def _get_parent_function_name(self):
-        print(inspect.stack()[3])
         return inspect.stack()[3].function
 
     @classmethod

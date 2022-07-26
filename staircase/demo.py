@@ -1,4 +1,4 @@
-from staircase import StaircaseTest, Setup, Task, Teardown, Substep
+from staircase import StaircaseTest, Setup, Task, Teardown, Substep, Test
 
 
 class DemoTest(StaircaseTest):
@@ -12,7 +12,7 @@ class DemoTest(StaircaseTest):
 
     @Setup(desc='reads expected filename and opens file for write')
     def read_and_open_file(self):
-        return True
+        return False, "Something went wrong trying to process the files, error code 2."
 
     @Task(desc='processing...')
     def process_1(self):
@@ -20,7 +20,7 @@ class DemoTest(StaircaseTest):
 
     @Task(desc='processing again...')
     def process_2(self):
-        return False
+        return True
 
     @Task(desc='cleanup of processing failure', on_fail='process_2')
     def cleanup_process_fail(self):
@@ -28,26 +28,32 @@ class DemoTest(StaircaseTest):
         # self.restart()
         return True
 
-    @Task(desc='even more processing', on_pass='process_2')
+    @Task(desc='even more processing')
     def process_files(self):
-        return False, 'Yeah this messed up'
+        return True, 928
 
     @Task(on_pass=('process_files', 'process_1', 'process_2'))
     def final_processing(self):
         @Substep(desc='substep for success of process_files', on_pass='process_files')
         def process_a():
-            return True
+            return True, 15
 
         @Substep(desc='substep for success of process_1 and process_2', on_pass=('process_1', 'process_2'))
         def process_b():
-            return True
+            return True, 16
 
-        process_a()
-        process_b()
+        a_res = process_a()[1]
+        b_res = process_b()[1]
 
-        return True
+        return True, (a_res, b_res)
 
-    @Teardown(desc='close the db connection', on_pass='$ALL')
+    @Test(desc='Make sure all files were correctly modified.', on_pass='final_processing')
+    def validate_processed_files(self):
+        # Will equal (15, 16)
+        final_proc_res = self.get_return_from_step('final_processing')
+        return True, "This is a return value that other steps can use!"
+
+    @Teardown(desc='close the db connection', on_pass='connect_to_db')
     def close_db_conn(self):
         return True
 

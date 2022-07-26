@@ -1,8 +1,10 @@
 from staircase.decorators import _Task, _Setup, _Test, _Teardown
 from staircase.logger import StaircaseLogger, DefaultLogger
 from staircase import StaircasePrinter, StaircasePrintMode
+from staircase.types import StepRegistration
 from utils.classes import get_members
 from typing_extensions import final
+from typing import Dict
 
 """
   █████████  ███████████   █████████   █████ ███████████     █████████    █████████    █████████  ██████████
@@ -81,7 +83,7 @@ class StaircaseTest:
         self.ordered_list = []
         self.run_args = {}
 
-        self.step_directory = {}
+        self.step_registry: Dict[str, StepRegistration] = {}
         self._register_steps()
 
         self._setup_steps, self._main_steps, self._teardown_steps = self._get_sorted_steps()
@@ -117,14 +119,14 @@ class StaircaseTest:
             self.run(**self.run_args)
 
     def display(self):
-        printer = StaircasePrinter(self.ordered_list, self.step_directory, self.logger)
+        printer = StaircasePrinter(self.ordered_list, self.step_registry, self.logger)
         printer.print(StaircasePrintMode.DISPLAY)
 
     def _reset(self):
         # Clear step and substep results
-        for step in self.step_directory:
-            self.step_directory[step]['results'] = (None, None)
-            self.step_directory[step]['substeps'] = []
+        for step in self.step_registry:
+            self.step_registry[step].results = (None, None)
+            self.step_registry[step].substeps = []
 
     def _run_flight(self, first_step, last_step, steps):
         for step in steps:
@@ -132,21 +134,20 @@ class StaircaseTest:
                 self._call_step_function(step)
 
     def _step_is_qualified_to_run(self, first_step, last_step, step):
-        in_range = first_step <= self.step_directory[step]['index'] <= last_step
+        in_range = first_step <= self.step_registry[step].step_index <= last_step
 
         # Always run if setup or teardown (contingent on dependencies being met of course)
-        is_setup_teardown = self.step_directory[step]['type'] == '_Setup' \
-                            or self.step_directory[step]['type'] == '_Teardown'
+        is_setup_teardown = self.step_registry[step].step_type == '_Setup' \
+                            or self.step_registry[step].step_type == '_Teardown'
         return in_range or is_setup_teardown
 
     def _call_step_function(self, step_name):
         try:
-            if self._check_pre_requisites(step_name):
-                getattr(self, step_name)(self)
-            else:
-                self.step_directory[step_name]['results'] = (None, "Did not run due to step dependency check failure.")
+            self._run_step(step_name)
+
         except MaxResetsExceeded as max_resets_exception:
-            self.step_directory[step_name]['results'] = (False, str(max_resets_exception))
+            self.step_registry[step_name].results = (False, str(max_resets_exception))
+
         except Exception as e:
             self.logger.error(f'An exception occurred while executing step {step_name}. {str(e)}')
             raise e
@@ -155,60 +156,64 @@ class StaircaseTest:
         if results == (None, None):
             raise Exception(f'Step {step_name} requires a success value of the form (pass/fail [bool], result [any])')
 
-    def _check_pre_requisites(self, step):
-        on_pass = self.step_directory[step]['on_pass']
-        on_fail = self.step_directory[step]['on_fail']
+    def _run_step(self, step_name):
+        if self._check_pre_requisites_for_step(step_name):
+            self.step_registry[step_name].method_reference(self)
+        else:
+            self.step_registry[step_name].results = (None, "Did not run due to step dependency check failure.")
+
+    def _check_pre_requisites_for_step(self, step):
+        on_pass = self.step_registry[step].on_pass
+        on_fail = self.step_registry[step].on_fail
 
         if on_pass:
             dependencies_have_passed = []
             for dep in on_pass:
-                dependencies_have_passed.append(self.step_directory[dep]['results'][0])
+                dependencies_have_passed.append(self.step_registry[dep].results[0])
             return all(dependencies_have_passed)
 
         elif on_fail:
             dependencies_have_failed = []
             for dep in on_fail:
-                dependencies_have_failed.append(not self.step_directory[dep]['results'][0])
+                dependencies_have_failed.append(not self.step_registry[dep].results[0])
             return all(dependencies_have_failed)
 
         return True
 
     def _register_steps(self):
         for step_name in get_members(self):
-            for step in self._get_flights():
+            for step in self._get_flight_classes():
                 if isinstance(getattr(self, step_name), step):
                     self.register_step(step.__name__, -1,
                                        step_name,
                                        getattr(self, step_name),
-                                       self._get_on_pass_for_step(step_name),
-                                       self._get_on_fail_for_step(step_name),
+                                       self._get_attr_for_step(step_name, 'on_pass'),
+                                       self._get_attr_for_step(step_name, 'on_fail'),
                                        getattr(self, step_name).desc)
                     break
 
-        for registered_step in self.step_directory:
-            on_pass = self.step_directory[registered_step]['on_pass']
-            on_fail = self.step_directory[registered_step]['on_fail']
+        for registered_step in self.step_registry:
+            on_pass = self.step_registry[registered_step].on_pass
+            on_fail = self.step_registry[registered_step].on_fail
 
             if on_pass == ('$ALL',):
                 all_steps = tuple([])
-                for step in self.step_directory:
+                for step in self.step_registry:
                     if step != registered_step:
                         all_steps += (step,)
                 on_pass = all_steps
 
             if on_fail == ('$ALL',):
                 all_steps = tuple([])
-                for step in self.step_directory:
+                for step in self.step_registry:
                     if step != registered_step:
                         all_steps += (step,)
                 on_fail = all_steps
 
-            self.step_directory[registered_step]['on_pass'] = on_pass
-            self.step_directory[registered_step]['on_fail'] = on_fail
+            self.step_registry[registered_step].on_pass = on_pass
+            self.step_registry[registered_step].on_fail = on_fail
 
-        print(self.step_directory['close_db_conn'])
-
-    def _get_flights(self):
+    def _get_flight_classes(self):
         return [
             _Setup,
             _Task,
@@ -216,64 +221,53 @@ class StaircaseTest:
             _Teardown
         ]
 
-    def _get_on_pass_for_step(self, name):
-        on_pass = None
-        try:
-            on_pass = getattr(self, name).on_pass
-        except AttributeError:
-            pass
-
-        return on_pass
-
-    def _get_on_fail_for_step(self, name):
-        on_fail = None
-        try:
-            on_fail = getattr(self, name).on_fail
-        except AttributeError:
-            pass
-
-        return on_fail
-
     def register_step(self, stype, index, name, ref, on_pass, on_fail, desc):
-        self.step_directory[name] = {
-            'results': (None, None),
-            'type': stype,
-            'index': index,
-            'on_pass': on_pass,
-            'on_fail': on_fail,
-            'desc': desc,
-            'ref': ref,
-            'substeps': []
-        }
+        self.step_registry[name] = StepRegistration(
+            step_type=stype,
+            step_index=index,
+            on_pass=on_pass,
+            on_fail=on_fail,
+            desc=desc,
+            method_reference=ref,
+        )
+
+    def _get_attr_for_step(self, step_name: str, attr_name: str):
+        res = None
+        try:
+            res = getattr(getattr(self, step_name), attr_name)
+        except AttributeError:
+            pass
+
+        return res
 
     def get_return_from_step(self, step):
-        results = self.step_directory[step]['results']
+        results = self.step_registry[step].results
         if results == (None, None):
             raise Exception(f"Error attempting to fetch results from step {step}, which has not yet run.")
         return results[1]
 
     def step_passed(self, step):
-        results = self.step_directory[step]['results']
+        results = self.step_registry[step].results
         if results == (None, None):
             raise Exception(f"Error attempting to fetch pass status from step {step}, which has not yet run.")
 
         return results[0]
 
     def get_step_results(self, step):
-        results = self.step_directory[step]['results']
+        results = self.step_registry[step].results
         if results == (None, None):
             raise Exception(f"Error attempting to fetch results from step {step}, which has not yet run.")
         return results
 
     def _log_test_results(self, show_all):
-        printer = StaircasePrinter(self.ordered_list, self.step_directory, self.logger)
+        printer = StaircasePrinter(self.ordered_list, self.step_registry, self.logger)
         printer.print(StaircasePrintMode.SUMMARY if show_all else StaircasePrintMode.RESULTS)
 
     def _get_sorted_steps(self):
         ordered_list = []
 
         try:
-            for step_name in self.step_directory:
+            for step_name in self.step_registry:
                 ordered_list = self._recur_step_dependencies(step_name, ordered_list)
         except Exception as e:
             if 'recursion depth' in str(e):
@@ -285,7 +279,7 @@ class StaircaseTest:
         teardown_steps = []
 
         for step_name in ordered_list:
-            match self.step_directory[step_name]['type']:
+            match self.step_registry[step_name].step_type:
                 case '_Setup':
                     setup_steps.append(step_name)
                 case '_Task':
@@ -296,17 +290,17 @@ class StaircaseTest:
                     teardown_steps.append(step_name)
                 case _:
                     raise Exception(
-                        f'An error occurred while ordering steps. Step type {self.step_directory[step_name]["type"]} is invalid.')
+                        f'An error occurred while ordering steps. Step {self.step_registry[step_name]} with type {self.step_registry[step_name].step_type} is invalid.')
 
         return setup_steps, task_steps, teardown_steps
 
     def _recur_step_dependencies(self, node, ordered_list):
-        if self.step_directory[node]['on_pass']:
-            for pointer in self.step_directory[node]['on_pass']:
+        if self.step_registry[node].on_pass:
+            for pointer in self.step_registry[node].on_pass:
                 self._recur_step_dependencies(pointer, ordered_list)
 
-        if self.step_directory[node]['on_fail']:
-            for pointer in self.step_directory[node]['on_fail']:
+        if self.step_registry[node].on_fail:
+            for pointer in self.step_registry[node].on_fail:
                 self._recur_step_dependencies(pointer, ordered_list)
 
         if node not in ordered_list:
@@ -315,9 +309,8 @@ class StaircaseTest:
         return ordered_list
 
     def _assign_indices_to_directory(self):
-        concat_steps = self._setup_steps + self._main_steps + self._teardown_steps
-        for index, step in enumerate(concat_steps, 1):
-            self.step_directory[step] |= {'index': index}
+        for index, step in enumerate(self.ordered_list, 1):
+            self.step_registry[step].step_index = index
 
     def _check_first_last(self, first_step, last_step):
         if first_step > last_step or first_step < 1 or last_step > len(self.ordered_list):
